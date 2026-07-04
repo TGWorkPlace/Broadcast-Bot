@@ -49,11 +49,13 @@ class BroadcastBot(Client):
             bot_token=BOT_TOKEN,
         )
 
-    async def start(self):
+    async def start(self, *args, **kwargs):
+        # Newer kurigram versions call app.run() -> self.start(use_qr=..., except_ids=...).
+        # Accept and forward any such kwargs to the base Client.start().
         await db.init_db()
         logger.info("Database initialized.")
 
-        await super().start()
+        await super().start(*args, **kwargs)
 
         me = await self.get_me()
         logger.info(f"Bot started: @{me.username}")
@@ -68,10 +70,10 @@ class BroadcastBot(Client):
             except Exception as e:
                 logger.warning(f"Startup log failed: {e}")
 
-    async def stop(self, *args):
+    async def stop(self, *args, **kwargs):
         if hasattr(self, "_web_runner"):
             await self._web_runner.cleanup()
-        await super().stop()
+        await super().stop(*args, **kwargs)
         logger.info("Bot stopped.")
 
 
