@@ -266,14 +266,14 @@ async def start_handler(client: Client, message: Message):
 async def help_handler(client: Client, message: Message):
     await message.reply(
         "<b>📖 Commands</b>\n\n"
-        "/post — Create and broadcast a post\n"
-        "/add_channels — Add channels to the bot\n"
-        "/list_channels — View your connected channels\n"
-        "/del_channel — Remove channel(s) from the bot\n"
-        "/refresh_chnl — Refresh channel names from Telegram\n"
-        "/delete_post — Delete a broadcast post from your channels\n"
-        "/stats — Your usage statistics\n"
-        "/cancel — Cancel current operation\n\n"
+        "/post - Create and broadcast a post\n"
+        "/add_channels - Add channels to the bot\n"
+        "/list_channels - View your connected channels\n"
+        "/del_channel - Remove channel(s) from the bot\n"
+        "/refresh_chnl - Refresh channel names from Telegram\n"
+        "/delete_post - Delete a broadcast post from your channels\n"
+        "/stats - Your usage statistics\n"
+        "/cancel - Cancel current operation\n\n"
         "<i>Your channels and posts are private — only you can see or manage them.</i>",
         parse_mode=enums.ParseMode.HTML
     )
