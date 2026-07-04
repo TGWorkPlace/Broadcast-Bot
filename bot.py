@@ -85,14 +85,12 @@ app = BroadcastBot()
 # ─────────────────────────────────────────────
 
 COLOR_MAP = {
-    "blue":      enums.ButtonStyle.PRIMARY,
-    "primary":   enums.ButtonStyle.PRIMARY,
-    "green":     enums.ButtonStyle.SUCCESS,
-    "success":   enums.ButtonStyle.SUCCESS,
-    "red":       enums.ButtonStyle.DANGER,
-    "danger":    enums.ButtonStyle.DANGER,
-    "gray":      enums.ButtonStyle.SECONDARY,
-    "secondary": enums.ButtonStyle.SECONDARY,
+    "blue":    enums.ButtonStyle.PRIMARY,
+    "primary": enums.ButtonStyle.PRIMARY,
+    "green":   enums.ButtonStyle.SUCCESS,
+    "success": enums.ButtonStyle.SUCCESS,
+    "red":     enums.ButtonStyle.DANGER,
+    "danger":  enums.ButtonStyle.DANGER,
 }
 
 
