@@ -18,7 +18,6 @@ from pyrogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from pyrogram.errors import FloodWait
-from pyrogram.enums import ParseMode, ButtonStyle
 
 import database as db
 from config import API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL
@@ -86,12 +85,12 @@ app = BroadcastBot()
 # ─────────────────────────────────────────────
 
 COLOR_MAP = {
-    "blue":    "primary",
-    "primary": "primary",
-    "green":   "success",
-    "success": "success",
-    "red":     "danger",
-    "danger":  "danger",
+    "blue":    enums.ButtonStyle.PRIMARY,
+    "primary": enums.ButtonStyle.PRIMARY,
+    "green":   enums.ButtonStyle.SUCCESS,
+    "success": enums.ButtonStyle.SUCCESS,
+    "red":     enums.ButtonStyle.DANGER,
+    "danger":  enums.ButtonStyle.DANGER,
 }
 
 
@@ -103,7 +102,7 @@ def parse_buttons(text: str):
       Name - https://link.com                -> normal (no colour) button
       Name - https://link.com - blue          -> coloured button (blue/green/red)
 
-    Returns a list of dicts: {"name": ..., "url": ..., "style": <str|None>}
+    Returns a list of dicts: {"name": ..., "url": ..., "style": <enums.ButtonStyle|None>}
     """
     buttons = []
     for line in text.strip().splitlines():
@@ -135,6 +134,8 @@ def build_inline_keyboard(buttons: list):
         style = b.get("style")
         if style:
             # "style" is the Bot API 9.4 / kurigram field for button colour.
+            # It must be an enums.ButtonStyle member (e.g. enums.ButtonStyle.PRIMARY) —
+            # passing a plain string like "primary" is silently ignored by kurigram.
             # Requires a recent kurigram build; older clients simply ignore it.
             kwargs["style"] = style
         rows.append([InlineKeyboardButton(b["name"], **kwargs)])
