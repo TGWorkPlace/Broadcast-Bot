@@ -94,51 +94,87 @@ COLOR_MAP = {
 }
 
 
+def _parse_single_button(chunk: str):
+    """
+    Parses a single "Name - link - colour" chunk into a button dict,
+    or returns None if it can't be parsed.
+    """
+    if " - " not in chunk:
+        return None
+    parts = [p.strip() for p in chunk.split(" - ")]
+    if len(parts) < 2:
+        return None
+
+    name = parts[0]
+    url = parts[1]
+    style = None
+
+    if len(parts) >= 3 and parts[2]:
+        color_key = parts[2].lower()
+        style = COLOR_MAP.get(color_key)  # unrecognised colour -> normal button
+
+    if name and url.startswith("http"):
+        return {"name": name, "url": url, "style": style}
+    return None
+
+
 def parse_buttons(text: str):
     """
-    Parses one button per line.
+    Parses buttons from text, one row per line.
 
-    Formats supported:
-      Name - https://link.com                -> normal (no colour) button
-      Name - https://link.com - blue          -> coloured button (blue/green/red)
+    Vertical (each on its own row):
+      Name - https://link.com
+      Name - https://link.com - blue
 
-    Returns a list of dicts: {"name": ..., "url": ..., "style": <enums.ButtonStyle|None>}
+    Horizontal (multiple buttons on the same row, separated by "|"):
+      Name - https://link.com - blue|Name2 - https://link2.com - green
+
+    Returns a list of ROWS, where each row is a list of button dicts:
+      {"name": ..., "url": ..., "style": <enums.ButtonStyle|None>}
     """
-    buttons = []
+    rows = []
     for line in text.strip().splitlines():
-        if " - " not in line:
-            continue
-        parts = [p.strip() for p in line.split(" - ")]
-        if len(parts) < 2:
+        line = line.strip()
+        if not line:
             continue
 
-        name = parts[0]
-        url = parts[1]
-        style = None
+        row = []
+        for chunk in line.split("|"):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            btn = _parse_single_button(chunk)
+            if btn:
+                row.append(btn)
 
-        if len(parts) >= 3 and parts[2]:
-            color_key = parts[2].lower()
-            style = COLOR_MAP.get(color_key)  # unrecognised colour -> normal button
+        if row:
+            rows.append(row)
 
-        if name and url.startswith("http"):
-            buttons.append({"name": name, "url": url, "style": style})
-    return buttons
+    return rows
 
 
-def build_inline_keyboard(buttons: list):
-    if not buttons:
+def build_inline_keyboard(button_rows: list):
+    """
+    Builds an InlineKeyboardMarkup from button_rows, where button_rows is a
+    list of rows and each row is a list of button dicts (supports horizontal
+    grouping of multiple buttons per row).
+    """
+    if not button_rows:
         return None
     rows = []
-    for b in buttons:
-        kwargs = {"url": b["url"]}
-        style = b.get("style")
-        if style:
-            # "style" is the Bot API 9.4 / kurigram field for button colour.
-            # It must be an enums.ButtonStyle member (e.g. enums.ButtonStyle.PRIMARY) —
-            # passing a plain string like "primary" is silently ignored by kurigram.
-            # Requires a recent kurigram build; older clients simply ignore it.
-            kwargs["style"] = style
-        rows.append([InlineKeyboardButton(b["name"], **kwargs)])
+    for row in button_rows:
+        kb_row = []
+        for b in row:
+            kwargs = {"url": b["url"]}
+            style = b.get("style")
+            if style:
+                # "style" is the Bot API 9.4 / kurigram field for button colour.
+                # It must be an enums.ButtonStyle member (e.g. enums.ButtonStyle.PRIMARY) —
+                # passing a plain string like "primary" is silently ignored by kurigram.
+                # Requires a recent kurigram build; older clients simply ignore it.
+                kwargs["style"] = style
+            kb_row.append(InlineKeyboardButton(b["name"], **kwargs))
+        rows.append(kb_row)
     return InlineKeyboardMarkup(rows)
 
 
@@ -539,15 +575,19 @@ async def message_state_handler(client: Client, message: Message):
         user_states[uid] = state
         await message.reply(
             "🔘 <b>Add Buttons</b>\n\n"
-            "Send button links one per line:\n"
+            "Send button links one <b>row</b> per line:\n"
             "<code>Button Name - https://link.com</code>\n"
             "or with an optional colour (blue/green/red):\n"
             "<code>Button Name - https://link.com - blue</code>\n\n"
+            "To put <b>multiple buttons on the same row</b> (horizontal), "
+            "separate them with <code>|</code> on one line:\n"
+            "<code>Name1 - https://link1.com - blue|Name2 - https://link2.com - green</code>\n\n"
             "Example:\n"
             "<code>Visit Website - https://example.com - blue\n"
-            "Join Channel - https://t.me/yourchannel - green\n"
-            "My id - https://t.me/username - red\n"
+            "Join Channel - https://t.me/yourchannel - green|My id - https://t.me/username - red\n"
             "Join - https://t.me/channel</code>\n\n"
+            "In the example above, \"Join Channel\" and \"My id\" appear side by side "
+            "on the same row, while the other two buttons each get their own row.\n\n"
             "Buttons with no colour given are shown as normal buttons.\n"
             "Send /skip to add no buttons.",
             parse_mode=enums.ParseMode.HTML
@@ -563,6 +603,8 @@ async def message_state_handler(client: Client, message: Message):
                     "<code>Button Name - https://link.com</code>\n"
                     "or\n"
                     "<code>Button Name - https://link.com - blue</code>\n\n"
+                    "For a horizontal row, separate buttons with <code>|</code>:\n"
+                    "<code>Name1 - https://link1.com|Name2 - https://link2.com</code>\n\n"
                     "Or send /skip to add no buttons.",
                     parse_mode=enums.ParseMode.HTML
                 )
