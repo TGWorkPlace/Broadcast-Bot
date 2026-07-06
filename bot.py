@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+import aiohttp
 import pytz
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -20,7 +21,7 @@ from pyrogram.types import (
 from pyrogram.errors import FloodWait
 
 import database as db
-from config import API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL
+from config import API_ID, API_HASH, BOT_TOKEN, LOG_CHANNEL, SHORTENER_API_URL, SHORTENER_API_KEY
 from webserver import run_webserver
 
 logging.basicConfig(
@@ -96,8 +97,12 @@ COLOR_MAP = {
 
 def _parse_single_button(chunk: str):
     """
-    Parses a single "Name - link - colour" chunk into a button dict,
+    Parses a single "Name - link - colour - short" chunk into a button dict,
     or returns None if it can't be parsed.
+
+    The 4th field is optional and, if present and equal to "short"
+    (case-insensitive), marks this button's link to be auto-shortened via
+    the external shortener API before the keyboard is built.
     """
     if " - " not in chunk:
         return None
@@ -108,13 +113,17 @@ def _parse_single_button(chunk: str):
     name = parts[0]
     url = parts[1]
     style = None
+    short = False
 
     if len(parts) >= 3 and parts[2]:
         color_key = parts[2].lower()
         style = COLOR_MAP.get(color_key)  # unrecognised colour -> normal button
 
+    if len(parts) >= 4 and parts[3]:
+        short = parts[3].strip().lower() == "short"
+
     if name and url.startswith("http"):
-        return {"name": name, "url": url, "style": style}
+        return {"name": name, "url": url, "style": style, "short": short}
     return None
 
 
@@ -125,12 +134,16 @@ def parse_buttons(text: str):
     Vertical (each on its own row):
       Name - https://link.com
       Name - https://link.com - blue
+      Name - https://link.com - blue - short
 
     Horizontal (multiple buttons on the same row, separated by "|"):
       Name - https://link.com - blue|Name2 - https://link2.com - green
 
+    A 4th field of "short" auto-shortens that button's link via the
+    external shortener API (see shorten_url / shorten_button_rows below).
+
     Returns a list of ROWS, where each row is a list of button dicts:
-      {"name": ..., "url": ..., "style": <enums.ButtonStyle|None>}
+      {"name": ..., "url": ..., "style": <enums.ButtonStyle|None>, "short": bool}
     """
     rows = []
     for line in text.strip().splitlines():
@@ -176,6 +189,46 @@ def build_inline_keyboard(button_rows: list):
             kb_row.append(InlineKeyboardButton(b["name"], **kwargs))
         rows.append(kb_row)
     return InlineKeyboardMarkup(rows)
+
+
+async def shorten_url(url: str) -> str:
+    """
+    Calls the external Shortener bot's HTTP API (GET {SHORTENER_API_URL}?url=...)
+    and returns the shortened URL. Falls back to the original URL if the
+    shortener isn't configured or the request fails for any reason, so a
+    broken/unreachable shortener never blocks posting.
+    """
+    if not SHORTENER_API_URL:
+        return url
+
+    params = {"url": url}
+    if SHORTENER_API_KEY:
+        params["api_key"] = SHORTENER_API_KEY
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(SHORTENER_API_URL, params=params, timeout=10) as resp:
+                data = await resp.json()
+                if data.get("status") == "success" and data.get("short_url"):
+                    return data["short_url"]
+                logger.warning(f"Shortener API returned no short_url for {url}: {data}")
+    except Exception as e:
+        logger.warning(f"Shortener API call failed for {url}: {e}")
+
+    return url
+
+
+async def shorten_button_rows(button_rows: list):
+    """
+    Walks button_rows (as produced by parse_buttons) and replaces the "url"
+    of every button flagged short=True with its shortened equivalent,
+    in place. Buttons not flagged "short" are left untouched.
+    """
+    for row in button_rows:
+        for b in row:
+            if b.get("short"):
+                b["url"] = await shorten_url(b["url"])
+    return button_rows
 
 
 def build_channel_keyboard(channels: list, page: int, selected: set):
@@ -579,11 +632,15 @@ async def message_state_handler(client: Client, message: Message):
             "<code>Button Name - https://link.com</code>\n"
             "or with an optional colour (blue/green/red):\n"
             "<code>Button Name - https://link.com - blue</code>\n\n"
+            "To auto-shorten a button's link, add <code>short</code> as a 4th field:\n"
+            "<code>Button Name - https://link.com - blue - short</code>\n"
+            "(leave the colour field empty if you don't want one: "
+            "<code>Button Name - https://link.com - - short</code>)\n\n"
             "To put <b>multiple buttons on the same row</b> (horizontal), "
             "separate them with <code>|</code> on one line:\n"
             "<code>Name1 - https://link1.com - blue|Name2 - https://link2.com - green</code>\n\n"
             "Example:\n"
-            "<code>Visit Website - https://example.com - blue\n"
+            "<code>Visit Website - https://example.com - blue - short\n"
             "Join Channel - https://t.me/yourchannel - green|My id - https://t.me/username - red\n"
             "Join - https://t.me/channel</code>\n\n"
             "In the example above, \"Join Channel\" and \"My id\" appear side by side "
@@ -608,6 +665,7 @@ async def message_state_handler(client: Client, message: Message):
                     "Or send /skip to add no buttons.",
                     parse_mode=enums.ParseMode.HTML
                 )
+            buttons = await shorten_button_rows(buttons)
             state["post_buttons"] = buttons
 
         state["step"] = "post_preview"
