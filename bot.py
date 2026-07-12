@@ -6,6 +6,12 @@ started via bot.run() which calls start() then idles.
 This is a PUBLIC bot: every user manages their own private set of
 channels and posts. Users never see or touch each other's channels —
 everything is scoped by the user's own Telegram user_id.
+
+SECURITY: a channel may only be added, and a post may only be sent to a
+channel, if the requesting Telegram user is currently an administrator
+(or creator) of that channel. Admin status is re-verified live against
+Telegram on every add and on every send, since users can be promoted or
+demoted after a channel was originally added.
 """
 
 import asyncio
@@ -35,6 +41,8 @@ logger = logging.getLogger(__name__)
 # In-memory session state per user
 # ─────────────────────────────────────────────
 user_states: dict = {}
+
+ADMIN_STATUSES = ("administrator", "creator")
 
 # ─────────────────────────────────────────────
 # Bot class
@@ -79,6 +87,42 @@ class BroadcastBot(Client):
 
 
 app = BroadcastBot()
+
+# ─────────────────────────────────────────────
+# Admin verification helpers
+# ─────────────────────────────────────────────
+
+async def get_member_status(client: Client, channel_id, user_id):
+    """
+    Returns the .status.value string of user_id in channel_id, or None if
+    it cannot be determined (user not a member, channel unreachable, etc).
+    Never raises.
+    """
+    try:
+        member = await client.get_chat_member(channel_id, user_id)
+        return member.status.value
+    except Exception as e:
+        logger.warning(f"Could not fetch member status for {user_id} in {channel_id}: {e}")
+        return None
+
+
+async def is_bot_admin(client: Client, channel_id) -> bool:
+    """Checks the bot itself ('me') is an admin/creator of channel_id."""
+    status = await get_member_status(client, channel_id, "me")
+    return status in ADMIN_STATUSES
+
+
+async def is_user_admin(client: Client, channel_id, user_id) -> bool:
+    """
+    Checks whether user_id currently holds an admin/creator role in
+    channel_id. This is re-checked live against Telegram every time it's
+    called (never trusted from cached/db state), since a user's admin
+    rights in a channel can change after the channel was added to the bot.
+    Returns False (never raises) if the status can't be confirmed.
+    """
+    status = await get_member_status(client, channel_id, user_id)
+    return status in ADMIN_STATUSES
+
 
 # ─────────────────────────────────────────────
 # Button colour support (Bot API 9.4 / kurigram)
@@ -363,7 +407,9 @@ async def help_handler(client: Client, message: Message):
         "/delete_post - Delete a broadcast post from your channels\n"
         "/stats - Your usage statistics\n"
         "/cancel - Cancel current operation\n\n"
-        "<i>Your channels and posts are private — only you can see or manage them.</i>",
+        "<i>Your channels and posts are private — only you can see or manage them. "
+        "You must be an admin of a channel to add it or post to it, and this is "
+        "re-checked every time.</i>",
         parse_mode=enums.ParseMode.HTML
     )
 
@@ -421,7 +467,8 @@ async def add_channels_start(client: Client, message: Message):
     await message.reply(
         "📡 <b>Add Channels</b>\n\n"
         "Please <b>forward any message</b> from the channel you want to add.\n\n"
-        "<i>Make sure the bot is an admin in that channel first!</i>",
+        "<i>You must be an admin of that channel, and the bot must be an admin "
+        "in it too.</i>",
         parse_mode=enums.ParseMode.HTML
     )
 
@@ -593,14 +640,21 @@ async def message_state_handler(client: Client, message: Message):
                 ]])
             )
 
-        try:
-            member = await client.get_chat_member(ch_id, "me")
-            if member.status.value not in ("administrator", "creator"):
-                return await message.reply(
-                    "⚠️ I'm not an admin in that channel. Please add me as admin first."
-                )
-        except Exception as e:
-            return await message.reply(f"⚠️ Could not verify bot membership: {e}")
+        # SECURITY: verify the requesting user is actually an admin/creator
+        # of this channel before we let them register it with the bot.
+        # Without this check, anyone could forward a message from any
+        # public channel and gain the ability to post/delete in it via
+        # the bot, as long as the bot itself happened to be an admin there.
+        if not await is_user_admin(client, ch_id, uid):
+            return await message.reply(
+                "⛔ You must be an <b>admin</b> of that channel to add it.",
+                parse_mode=enums.ParseMode.HTML
+            )
+
+        if not await is_bot_admin(client, ch_id):
+            return await message.reply(
+                "⚠️ I'm not an admin in that channel. Please add me as admin first."
+            )
 
         await db.add_channel(uid, ch_id, ch_name)
         await log(client, f"📡 Channel added by {uid}: {ch_name} ({ch_id})")
@@ -881,8 +935,33 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         post_id = await db.create_post(uid)
         success, failed = 0, 0
+        skipped_not_admin = []
 
         for ch in targets:
+            # SECURITY: re-verify, right before every send, that the user
+            # is still an admin/creator of this specific channel. Admin
+            # rights can be revoked at any time after a channel was added,
+            # so we never rely on the fact that the channel exists in our
+            # database as proof the user is still allowed to post to it.
+            if not await is_user_admin(client, ch["channel_id"], uid):
+                logger.info(
+                    f"User {uid} is not admin of {ch['channel_id']} ({ch['channel_name']}) "
+                    f"at send time — skipping."
+                )
+                failed += 1
+                skipped_not_admin.append(ch["channel_name"])
+                continue
+
+            # SECURITY: also re-verify the bot itself is still an admin of
+            # the channel, since it may have been demoted/removed too.
+            if not await is_bot_admin(client, ch["channel_id"]):
+                logger.info(
+                    f"Bot is not admin of {ch['channel_id']} ({ch['channel_name']}) "
+                    f"at send time — skipping."
+                )
+                failed += 1
+                continue
+
             try:
                 msg_id = await send_post_to_chat(client, ch["channel_id"], state)
                 await db.save_post_message(post_id, ch["channel_id"], msg_id)
@@ -902,14 +981,21 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 failed += 1
 
         user_states.pop(uid, None)
-        await query.message.edit_text(
+
+        result_text = (
             f"✅ <b>Broadcast Complete!</b>\n\n"
             f"📤 Sent: <b>{success}</b>\n"
             f"❌ Failed: <b>{failed}</b>\n"
             f"🆔 Post ID: <code>{post_id}</code>\n\n"
-            f"<i>Use /delete_post to remove from channels.</i>",
-            parse_mode=enums.ParseMode.HTML
+            f"<i>Use /delete_post to remove from channels.</i>"
         )
+        if skipped_not_admin:
+            names_text = "\n".join(f"• {n}" for n in skipped_not_admin)
+            result_text += (
+                f"\n\n⛔ <b>Skipped (you're no longer admin there):</b>\n{names_text}"
+            )
+
+        await query.message.edit_text(result_text, parse_mode=enums.ParseMode.HTML)
         await log(client, f"📢 Broadcast by {uid} | Post #{post_id} | ✅{success} ❌{failed}")
         await query.answer("Done!")
 
@@ -935,6 +1021,14 @@ async def callback_handler(client: Client, query: CallbackQuery):
         )
         deleted, failed = 0, 0
         for rec in records:
+            # SECURITY: also re-verify admin status before deleting a
+            # message from a channel, for the same reason as broadcasting.
+            if not await is_user_admin(client, rec["channel_id"], uid):
+                logger.info(
+                    f"User {uid} is not admin of {rec['channel_id']} at delete time — skipping."
+                )
+                failed += 1
+                continue
             try:
                 await client.delete_messages(rec["channel_id"], rec["message_id"])
                 deleted += 1
