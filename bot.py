@@ -42,7 +42,14 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 user_states: dict = {}
 
-ADMIN_STATUSES = ("administrator", "creator")
+ADMIN_STATUSES = ("administrator", "creator", "owner")
+# NOTE: Telegram's Bot API reports a channel owner's status as "creator",
+# but Pyrogram/Kurigram's own enums.ChatMemberStatus.OWNER member has
+# .value == "owner" (its auto-generated name-based value), not "creator".
+# Checking only ("administrator", "creator") therefore misses real channel
+# owners entirely — they'd pass Telegram's own admin check but fail here
+# and get treated as unauthorized / reported as "failed" on send. Both
+# spellings are included so it works regardless of which one is returned.
 
 # ─────────────────────────────────────────────
 # Bot class
